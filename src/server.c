@@ -410,8 +410,8 @@ void *_handle_connection(void *conn_fd_ptr)
       goto cleanup;
     }
 
-    char file_size_str[sizeof(file_size) * 2 + 1];
-    sprintf(file_size_str, "%ld", file_size);
+    char file_size_str[32];
+    snprintf(file_size_str, 32, "%ld", file_size);
 
     bstring_append(res, " 200 OK\r\n");
     bstring_append(res, "Content-Type: application/octet-stream\r\n");

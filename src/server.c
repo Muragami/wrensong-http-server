@@ -46,18 +46,12 @@ struct HttpMethod
 
 const char HTTP_VERSION[] = "HTTP/1.1";
 
-const char *const STR_HTTP_GET = "GET";
-const char *const STR_HTTP_POST = "POST";
-const char *const STR_HTTP_PUT = "PUT";
-const char *const STR_HTTP_PATCH = "PATCH";
-const char *const STR_HTTP_DELETE = "DELETE";
-
 struct HttpMethod KNOWN_HTTP_METHODS[] = {
-    {.str = STR_HTTP_GET, .typ = HTTP_GET},
-    {.str = STR_HTTP_POST, .typ = HTTP_POST},
-    {.str = STR_HTTP_PUT, .typ = HTTP_PUT},
-    {.str = STR_HTTP_PATCH, .typ = HTTP_PATCH},
-    {.str = STR_HTTP_DELETE, .typ = HTTP_DELETE},
+    {.str = "GET", .typ = HTTP_GET},
+    {.str = "POST", .typ = HTTP_POST},
+    {.str = "PUT", .typ = HTTP_PUT},
+    {.str = "PATCH", .typ = HTTP_PATCH},
+    {.str = "DELETE", .typ = HTTP_DELETE},
 };
 
 size_t KNOWN_HTTP_METHODS_LEN =

@@ -5,12 +5,12 @@
 struct Bstring
 {
     char *data;
-    size_t length;
-    size_t capacity;
+    unsigned int length;
+    unsigned int capacity;
 };
 
 #define BSTRING_INIT_CAPACITY 16
 
-struct Bstring *bstring_init(size_t capacity, const char *const s);
-bool bstring_append(struct Bstring *self, const char *const s);
+struct Bstring *bstring_init(unsigned int capacity, const char *s);
+bool bstring_append(struct Bstring *self, const char *s);
 void bstring_free(struct Bstring *self);

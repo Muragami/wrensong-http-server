@@ -1,14 +1,15 @@
 
 #include "bstring.h"
+#include <assert.h>
+#include <string.h>
+
 /**
  * initializes a new Bstring. returns `NULL` if memory allocation fails.
  *
- * @param capacity the initial capacity of the vector. if 0, it will be set
- * to a default value.
- * @param s inital value. it must be null terminated. pass `NULL` for no
- * initial value.
+ * @param capacity the initial capacity of the vector. if 0, it will be set to a default value.
+ * @param s inital value. it must be null terminated. pass `NULL` for no initial value.
  */
-struct Bstring *bstring_init(size_t capacity, const char *const s)
+struct Bstring *bstring_init(unsigned int capacity, const char *s)
 {
     struct Bstring *bstr = malloc(sizeof(struct Bstring));
     if (bstr == NULL)
@@ -21,7 +22,7 @@ struct Bstring *bstring_init(size_t capacity, const char *const s)
         capacity = BSTRING_INIT_CAPACITY;
     }
 
-    const size_t slen = (s == NULL) ? 0 : strlen(s);
+    const unsigned int slen = (s == NULL) ? 0 : (unsigned int)strlen(s);
     if (slen >= capacity)
     {
         capacity = slen + 1; // +1 for null terminator
@@ -53,7 +54,7 @@ struct Bstring *bstring_init(size_t capacity, const char *const s)
  * @param self the Bstring to append the C string to
  * @param the NULL-terminated C string to be appended
  */
-bool bstring_append(struct Bstring *self, const char *const s)
+bool bstring_append(struct Bstring *self, const char *s)
 {
     assert(self != NULL);
     assert(s != NULL);

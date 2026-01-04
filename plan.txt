@@ -1,0 +1,5 @@
+
+ - Use libevent to provide optimal blocking to wait for events.
+ - Dispatch events to worker threads in the pthread_pool.
+ - Utilize lz4 compression for bandwidth reduction.
+

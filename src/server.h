@@ -51,24 +51,37 @@ struct HttpMethod KNOWN_HTTP_METHODS[] = {
 
 struct HttpHeader
 {
+    char text[64];
     char *key;
     char *value;
+};
+
+struct HttpPath
+{
+    char text[256];
 };
 
 struct HttpRequest
 {
     enum HttpMethodTyp method;
-    char *path;
+    struct HttpPath path;
 
     // headers
-    struct HttpHeader *headers;
-    size_t headers_len;
+    struct HttpHeader header[4];
+    int header_count;
 
     // the request buffer
     char *_buffer;
     size_t _buffer_len;
 
     struct Bstring *body;
+};
+
+struct HttpConnection
+{
+    evutil_socket_t fd;
+    struct sockaddr_storage addr;
+    char addr_str[64];
 };
 
 extern struct Bstring *filename;

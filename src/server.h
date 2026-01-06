@@ -7,6 +7,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
+#include <event2/event.h>
+#include <event2/buffer.h>
+#include <event2/bufferevent.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_HEADERS 128

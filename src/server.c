@@ -1,5 +1,3 @@
-#define SWRAP_IMPLEMENTATION
-#include "swrap.h"
 #include "server.h"
 #include "pthread_pool.h"
 
@@ -8,83 +6,91 @@
 extern struct Bstring *filename;
 extern void handle_connection(int conn_fd);
 
-int server_fd = -1;
-struct swrap_addr client_addr;
+evutil_socket_t listener;
+struct sockaddr_in sin;
+struct event_base *base;
+struct event *listener_event;
 
 void cleanup_and_exit()
 {
-  if (server_fd != -1)
+  if (listener != -1)
   {
-    swrapClose(server_fd);
+    close(listener);
   }
 
   if (filename != NULL)
   {
     bstring_free(filename);
   }
-
-  swrapTerminate();
   exit(0);
+}
+
+void do_accept(evutil_socket_t listener, short event, void *arg)
+{
+  struct event_base *base = arg;
+  struct sockaddr_storage ss;
+  socklen_t slen = sizeof(ss);
+  int fd = accept(listener, (struct sockaddr *)&ss, &slen);
+  if (fd < 0)
+  {
+    perror("accept");
+  }
+  else if (fd > FD_SETSIZE)
+  {
+    close(fd);
+  }
+  else
+  {
+    struct bufferevent *bev;
+    evutil_make_socket_nonblocking(fd);
+    bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+    // bufferevent_setcb(bev, readcb, NULL, errorcb, NULL);
+    // bufferevent_setwatermark(bev, EV_READ, 0, MAX_LINE);
+    // bufferevent_enable(bev, EV_READ | EV_WRITE);
+  }
 }
 
 int main(int argc, char **argv)
 {
-  swrapInit();
-  // set base directory of public files (defaults to public)
-  if (argc > 2)
-  {
-    filename = bstring_init(0, argv[2]);
-    if (argv[2][strlen(argv[2]) - 1] != '/')
-    {
-      bstring_append(filename, "/");
-    }
-  }
-  else
-  {
-    filename = bstring_init(0, "./public/");
-  }
+#ifdef _WIN32
+  WSADATA WsaData;
+  return (WSAStartup(MAKEWORD(2, 2), &WsaData) != NO_ERROR);
+#endif
 
-  // Disable output buffering
-  setbuf(stdout, NULL);
-  setbuf(stderr, NULL);
+  base = event_base_new();
+  if (!base)
+    return; /*XXXerr*/
 
-  server_fd = swrapSocket(SWRAP_TCP, SWRAP_BIND, 0, "0.0.0.0", "42024");
-  if (server_fd == -1)
-  {
-    printf("error: Socket creation failed: %s...\n", strerror(errno));
-    cleanup_and_exit();
-  }
+  sin.sin_family = AF_INET;
+  sin.sin_addr.s_addr = 0;
+  sin.sin_port = htons(40713);
 
-  // lose the "Address already in use" error message. why this happens
-  // in the first place? well even after the server is closed, the port
-  // will still be hanging around for a while, and if you try to restart
-  // the server, you'll get an "Address already in use" error message
-  int reuse = 1;
-  if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
+  listener = socket(AF_INET, SOCK_STREAM, 0);
+  evutil_make_socket_nonblocking(listener);
+
+#ifndef WIN32
   {
-    printf("error: SO_REUSEADDR failed: %s \n", strerror(errno));
-    cleanup_and_exit();
+    int one = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
   }
-  int connection_backlog = 5;
-  if (swrapListen(server_fd, connection_backlog) != 0)
+#endif
+
+  if (bind(listener, (struct sockaddr *)&sin, sizeof(sin)) < 0)
   {
-    printf("error: Listen failed: %s \n", strerror(errno));
-    cleanup_and_exit();
+    perror("bind");
+    return;
   }
 
-  printf("Waiting for a client to connect...\n");
-
-  while (true)
+  if (listen(listener, 16) < 0)
   {
-    int conn_fd = swrapAccept(server_fd, &client_addr);
-    if (conn_fd == -1)
-    {
-      printf("error: Accept failed: %s \n", strerror(errno));
-      continue;
-    }
-
-    handle_connection(conn_fd);
+    perror("listen");
+    return;
   }
+
+  listener_event = event_new(base, listener, EV_READ | EV_PERSIST, do_accept, (void *)base);
+  event_add(listener_event, NULL);
+
+  event_base_dispatch(base);
 
   cleanup_and_exit();
   return 0;

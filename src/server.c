@@ -54,6 +54,7 @@ void do_update(evutil_socket_t fd, short events, void *arg)
   if (last_config_mod_time != fstat.st_mtime)
   {
     // reload the configuration
+    // TODO
   }
 }
 
@@ -79,10 +80,14 @@ void read_config(const char *config_path)
 
 int main(int argc, char **argv)
 {
+  event_init();
   // Initialize winsock2 if needed
 #ifdef _WIN32
   WSADATA WsaData;
   return (WSAStartup(MAKEWORD(2, 2), &WsaData) != NO_ERROR);
+  evthread_use_windows_threads();
+#else
+  evthread_use_pthreads();
 #endif
   // read our config file
   if (argc != 2)
@@ -102,10 +107,8 @@ int main(int argc, char **argv)
   sin4.sin_port = htons(port);
   listener = socket(AF_INET, SOCK_STREAM, 0);
   evutil_make_socket_nonblocking(listener);
-#ifndef _WIN32
   int one = 1;
   setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-#endif
   if (bind(listener, (struct sockaddr *)&sin4, sizeof(sin4)) < 0)
   {
     perror("bind");
@@ -127,10 +130,8 @@ int main(int argc, char **argv)
     sin6.sin6_port = htons(port);
     evutil_socket_t listener6 = socket(AF_INET6, SOCK_STREAM, 0);
     evutil_make_socket_nonblocking(listener6);
-#ifndef _WIN32
     int one = 1;
     setsockopt(listener6, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-#endif
     if (bind(listener6, (struct sockaddr *)&sin6, sizeof(sin6)) < 0)
     {
       perror("bind");
@@ -149,10 +150,11 @@ int main(int argc, char **argv)
   tv.tv_usec = 0;
   update_event = event_new(server, -1, EV_TIMEOUT | EV_PERSIST, do_update, NULL);
   event_add(update_event, &tv);
+  http_start(threads);
   // let's start the server
   event_base_dispatch(server);
   // cleanup and exit
   cleanup_and_exit();
-
+  http_end();
   return 0;
 }

@@ -18,6 +18,7 @@
 #include <event2/event.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
+#include <event2/thread.h>
 
 #define BUFFER_SIZE 1024
 #define MAX_HEADERS 128
@@ -49,42 +50,30 @@ struct HttpMethod KNOWN_HTTP_METHODS[] = {
     {.str = NULL, .typ = HTTP_UNKNOWN},
 };
 
-struct HttpHeader
-{
-    char text[64];
-    char *key;
-    char *value;
-};
-
-struct HttpPath
-{
-    char text[256];
-};
-
-struct HttpRequest
+typedef struct _HttpRequest
 {
     enum HttpMethodTyp method;
-    struct HttpPath path;
-
-    // headers
-    struct HttpHeader header[4];
-    int header_count;
-
-    // the request buffer
+    char *path;
+    char *host;
+    char *command;
+    int content_length;
     char *_buffer;
     size_t _buffer_len;
-
     struct Bstring *body;
-};
+} HttpRequest;
 
-struct HttpConnection
+typedef struct _HttpConnection
 {
     evutil_socket_t fd;
     struct sockaddr_storage addr;
+    int addr_len;
     char addr_str[64];
-};
+    HttpRequest request;
+    struct bufferevent *bev;
+    UT_hash_handle hh;
+} HttpConnection;
 
 extern struct Bstring *filename;
 extern void http_handle_connection(int conn_fd, void *arg, int arg_len);
-extern void http_start();
+extern void http_start(int thread_count);
 extern void http_end();

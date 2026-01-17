@@ -3,54 +3,17 @@
 #include <event2/thread.h>
 
 struct Bstring *filename = NULL;
-
-char *http_get_header(struct HttpRequest *self, char *header)
-{
-    assert(self != NULL);
-    assert(header != NULL);
-
-    for (size_t i = 0; i < self->headers_len; ++i)
-    {
-        if (strcasecmp(header, self->headers[i].key) == 0)
-        {
-            return self->headers[i].value;
-        }
-    }
-
-    return NULL;
-}
+void *thread_pool = NULL;
+HttpConnection *connections = NULL;
+struct event_base *http = NULL;
+pthread_t http_thread;
 
 void *_handle_connection(void *conn_fd_ptr)
 {
     assert(conn_fd_ptr != NULL);
-
-    int conn_fd = *(int *)conn_fd_ptr;
-
-    printf("processing connection with fd %d\n", conn_fd);
-
-    // read data from the client
-    struct HttpRequest req = {0};
-    req._buffer = malloc(BUFFER_SIZE);
-
-    FILE *fp = NULL;
-    size_t orig_filename_len = filename->length;
-
-    if (req._buffer == NULL)
-    {
-        printf("error: Failed to allocate memory\n");
-        goto cleanup;
-    }
-
-    ssize_t bytes_read = swrapReceive(conn_fd, req._buffer, BUFFER_SIZE - 1);
-    if (bytes_read <= 0)
-    {
-        printf("error: Recv failed/closed: %s \n", strerror(errno));
-        return NULL;
-    }
-
-    // null-terminate _buffer
-    req._buffer[bytes_read] = '\0';
-    req._buffer_len = (size_t)bytes_read;
+    HttpConnection *conn = conn_fd_ptr;
+    HttpRequest req = conn->request;
+    int closing = 0;
 
     char *parse_buffer = req._buffer;
 
@@ -66,27 +29,17 @@ void *_handle_connection(void *conn_fd_ptr)
         }
         i++;
     }
-
     // unknowm method
     if (req.method == HTTP_UNKNOWN)
     {
-        printf("error(parse): unknown method %s\n", method);
         return NULL;
     }
-
     // parse path & store it to req
     req.path = strsep(&parse_buffer, " ");
-
     // parse http version
     strsep(&parse_buffer, "\r");
-    // char *http_version = strsep(&parse_buffer, "\r");
-
     // the \r was consumed but the \n is still remaining so consume it
     parse_buffer++;
-
-    // parse headers & store it to req
-    req.headers = malloc(sizeof(struct HttpHeader) * MAX_HEADERS);
-    req.headers_len = 0;
 
     for (size_t i = 0; i < MAX_HEADERS; ++i)
     {
@@ -104,239 +57,91 @@ void *_handle_connection(void *conn_fd_ptr)
         header_line++; // consume the space
         char *value = strsep(&header_line, "\0");
 
-        req.headers[i].key = key;
-        req.headers[i].value = value;
-
-        ++req.headers_len;
-    }
-
-    // get content length and parse request body
-    size_t content_length = 0;
-    char *content_length_header = http_get_header(&req, "content-length");
-    if (content_length_header != NULL)
-    {
-        errno = 0;
-        size_t result = strtoul(content_length_header, NULL, 10);
-        // store result to content_length if there was no error
-        if (errno == 0)
+        if (strncmp(key, "Content-Length", 14) == 0)
         {
-            content_length = result;
+            req.content_length = atoi(value);
         }
-    }
-
-    if (content_length > 0)
-    {
-        req.body = bstring_init(content_length + 1, NULL);
-        bstring_append(req.body, parse_buffer);
-
-        // content lenth mismatch
-        if (req.body->length != content_length)
+        else if (strncmp(key, "Host", 4) == 0)
         {
+            req.host = value;
         }
-    }
-
-    // send response
-    int bytes_sent = -1;
-    if (strcmp(req.path, "/") == 0)
-    {
-        const char res[] = "HTTP/1.1 200 OK\r\n\r\n";
-        bytes_sent = send(conn_fd, res, sizeof(res) - 1, 0);
-    }
-    else if (strcmp(req.path, "/user-agent") == 0)
-    {
-        char *s = http_get_header(&req, "user-agent");
-        if (s == NULL)
+        else if (strncmp(key, "Command", 12) == 0)
         {
-            s = "NULL";
+            req.command = value;
         }
-
-        size_t slen = strlen(s);
-
-        char *res = malloc(BUFFER_SIZE);
-        sprintf(res,
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length:%zu\r\n\r\n"
-                "%s",
-                slen, s);
-
-        bytes_sent = send(conn_fd, res, strlen(res), 0);
-        free(res);
-    }
-    else if (strncmp(req.path, "/echo/", 6) == 0)
-    {
-        char *s = req.path + 6;
-        size_t slen = strlen(s);
-
-        char *res = malloc(BUFFER_SIZE);
-        sprintf(res,
-                "HTTP/1.1 200 OK\r\n"
-                "Content-Type: text/plain\r\n"
-                "Content-Length:%zu\r\n\r\n"
-                "%s",
-                slen, s);
-
-        bytes_sent = send(conn_fd, res, strlen(res), 0);
-        free(res);
-    }
-    else if (req.method == HTTP_GET && strncmp(req.path, "/files/", 7) == 0)
-    {
-        bstring_append(filename, req.path + 7);
-
-        // open the file
-        errno = 0;
-        fp = fopen(filename->data, "r");
-        if (fp == NULL && errno != ENOENT)
+        else if (strncmp(key, "Connection", 10) == 0)
         {
-            perror("error: fopen()");
-            goto cleanup;
-        }
-
-        struct Bstring *res = bstring_init(0, HTTP_VERSION);
-
-        // handle non-existant file
-        if (errno == ENOENT)
-        {
-            bstring_append(res, " 404 Not Found\r\n\r\n");
-            bytes_sent = send(conn_fd, res->data, res->length, 0);
-            goto cleanup;
-        }
-
-        // go to the end of file
-        if (fseek(fp, 0, SEEK_END) != 0)
-        {
-            perror("error: fseek()");
-            goto cleanup;
-        }
-
-        // get file size
-        long file_size = ftell(fp);
-        if (file_size < 0)
-        {
-            perror("error: fseek()");
-            goto cleanup;
-        }
-
-        // go back to the beginning of file
-        errno = 0;
-        rewind(fp);
-        if (errno != 0)
-        {
-            perror("error: rewind()");
-            goto cleanup;
-        }
-
-        char file_size_str[32];
-        snprintf(file_size_str, 32, "%ld", file_size);
-
-        bstring_append(res, " 200 OK\r\n");
-        bstring_append(res, "Content-Type: application/octet-stream\r\n");
-        bstring_append(res, "Content-Length: ");
-        bstring_append(res, file_size_str);
-        bstring_append(res, "\r\n\r\n");
-
-        bytes_sent = send(conn_fd, res->data, res->length, 0);
-        bstring_free(res);
-
-        char buffer[BUFFER_SIZE];
-
-        while (file_size > 0)
-        {
-            long bytes_to_read = file_size > BUFFER_SIZE ? BUFFER_SIZE : file_size;
-            size_t bytes_read = fread(buffer, bytes_to_read, 1, fp);
-
-            // check if bytes_read is less than expected because of error
-            if (bytes_read < bytes_to_read && ferror(fp))
+            if (strncmp(value, "close", 5) == 0)
             {
-                puts("error: fread()");
-                goto cleanup;
+                closing = 1;
             }
-
-            bytes_sent = send(conn_fd, buffer, bytes_to_read, 0);
-            file_size -= bytes_to_read;
         }
     }
-    else if (req.method == HTTP_POST && strncmp(req.path, "/files/", 7) == 0)
+
+    
+
+    free(conn->request._buffer);
+    if (closing)
     {
-        bstring_append(filename, req.path + 7);
-
-        // open the file in read mode to check whether it exists or not
-        errno = 0;
-        fp = fopen(filename->data, "r");
-        if (fp != NULL)
-        {
-            // file already exists
-            const char res[] = "HTTP/1.1 409 Conflict\r\n\r\n";
-            bytes_sent = send(conn_fd, res, sizeof(res) - 1, 0);
-            goto cleanup;
-        }
-
-        // open the file for writing now
-        errno = 0;
-        fp = fopen(filename->data, "w");
-        if (fp == NULL)
-        {
-            perror("error: fopen()");
-            goto cleanup;
-        }
-
-        size_t num_chunks = req.body->length / BUFFER_SIZE;
-        if (num_chunks > 0)
-        {
-            fwrite(req.body->data, BUFFER_SIZE, num_chunks, fp);
-        }
-
-        size_t remaining_bytes = req.body->length % BUFFER_SIZE;
-        if (remaining_bytes > 0)
-        {
-            fwrite(&req.body->data[req.body->length - remaining_bytes],
-                   remaining_bytes, 1, fp);
-        }
-
-        const char res[] = "HTTP/1.1 201 Created\r\n\r\n";
-        bytes_sent = send(conn_fd, res, sizeof(res) - 1, 0);
+        // remove the connection from the hash table
+        HASH_DEL(connections, conn);
+        bufferevent_free(conn->bev);
+        free(conn);
     }
-    else
-    {
-        const char res[] = "HTTP/1.1 404 Not Found\r\n\r\n";
-        bytes_sent = send(conn_fd, res, sizeof(res) - 1, 0);
-    }
-
-    if (bytes_sent == -1)
-    {
-        perror("error: send()");
-    }
-
-cleanup:
-    free(conn_fd_ptr);
-    free(req._buffer);
-    free(req.headers);
-    if (req.body != NULL)
-    {
-        bstring_free(req.body);
-    }
-
-    close(conn_fd);
-
-    if (fp != NULL)
-    {
-        fclose(fp);
-    }
-
-    filename->length = orig_filename_len;
-    filename->data[orig_filename_len] = '\0';
-
     return NULL;
+}
+
+void _http_read(struct bufferevent *bev, short events, void *ptr)
+{
+    HttpConnection *conn = ptr;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    size_t len = evbuffer_get_length(input);
+    if (len == 0)
+        return;
+    conn->request._buffer = malloc(len + 1);
+    conn->request._buffer_len = len;
+    evbuffer_copyout(input, conn->request._buffer, len);
+    conn->request._buffer[len] = '\0';
+    conn->bev = bev;
+    pool_enqueue(thread_pool, conn, 0);
+}
+
+void _http_event(struct bufferevent *bev, short events, void *ptr)
+{
 }
 
 void http_handle_connection(int conn_fd, void *arg, int arg_len)
 {
+    // create a new HttpConnection and add it to the connections hash table
+    HttpConnection *conn = calloc(1, sizeof(HttpConnection));
+    conn->fd = conn_fd;
+    memcpy(&conn->addr, arg, arg_len);
+    conn->addr_len = arg_len;
+    HASH_ADD_INT(connections, fd, conn);
+    // create a bufferevent for the connection
+    struct bufferevent *b = NULL;
+    b = bufferevent_socket_new(http, -1, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(b, _http_read, NULL, _http_event, conn);
+    bufferevent_enable(b, EV_READ);
 }
 
-extern void http_start()
+void *http_thread_func(void *arg)
 {
+    struct event_base *base = arg;
+    event_base_dispatch(base);
 }
 
-extern void http_end()
+void http_start(int thread_count)
 {
+    http = event_base_new();
+    thread_pool = pool_start(_handle_connection, thread_count);
+    pthread_create(&http_thread, NULL, http_thread_func, http);
+}
+
+void http_end()
+{
+    event_base_loopbreak(http);
+    pthread_join(http_thread, NULL);
+    event_base_free(http);
+    pool_end(thread_pool);
 }

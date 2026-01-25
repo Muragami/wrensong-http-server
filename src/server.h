@@ -19,6 +19,7 @@
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/thread.h>
+#include "wren.h"
 
 #define BUFFER_SIZE 1024
 #define MAX_HEADERS 128
@@ -62,6 +63,15 @@ typedef struct _HttpRequest
     struct Bstring *body;
 } HttpRequest;
 
+typedef struct _HttpApplication 
+{
+    char name[128];
+    struct Bstring *path;
+    WrenConfiguration vm_config;
+    WrenVM *vm;
+    UT_hash_handle hh;
+} HttpApplication;
+
 typedef struct _HttpConnection
 {
     evutil_socket_t fd;
@@ -70,6 +80,8 @@ typedef struct _HttpConnection
     char addr_str[64];
     HttpRequest request;
     struct bufferevent *bev;
+    HttpApplication *apps;
+    HttpApplication *slot[8];
     UT_hash_handle hh;
 } HttpConnection;
 

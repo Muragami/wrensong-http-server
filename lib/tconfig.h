@@ -1,18 +1,18 @@
 #ifndef _TCONFIG_H_
 #define _TCONFIG_H_
-#include <stdbool.h>
 
-#define INI_MAXLEN 255
+#include <stdbool.h>
+#include <stdarg.h>
 
 typedef struct ini_entry_s
 {
-    char key[INI_MAXLEN + 1];
-    char value[INI_MAXLEN + 1];
+    char *key;
+    char *value;
 } ini_entry_s;
 
 typedef struct ini_section_s
 {
-    char name[INI_MAXLEN + 1];
+    char *name;
     ini_entry_s *entry;
     int size;
 } ini_section_s;
@@ -23,6 +23,43 @@ typedef struct ini_table_s
     int size;
 } ini_table_s;
 
+/** 
+ * The supplied getc function must behave like fgetc(): 
+ * https://pubs.opengroup.org/onlinepubs/007904875/functions/fgetc.html
+ * The supplied error function must behave like ferror():
+ * https://pubs.opengroup.org/onlinepubs/007904875/functions/ferror
+**/
+typedef struct ini_in
+{
+    int (*getc)(void *arg);
+    int (*error)(void *arg);
+    void *arg;
+} ini_in_s;
+
+/** 
+ * The supplied vprintf function must behave like vfprintf():
+ * https://pubs.opengroup.org/onlinepubs/009696699/functions/vfprintf.html
+**/
+typedef struct ini_out
+{
+    int (*vprintf)(void *arg, const char *str, va_list lst);
+    void *arg;
+} ini_out_s;
+
+/** 
+ * The supplied set() function is called for each key/value pair read.
+ * The supplied create() function is called for each section created.
+**/
+typedef struct ini_callback
+{
+    void (*set)(void *arg, const char *key, const char *value);
+    void (*create)(void *arg, const char *section);
+    void *arg;
+} ini_callback_s;
+
+/**
+ * @brief Type definition for error handler function
+ */
 typedef void (*ini_error_handler_t)(const char *error_message, void *p);
 
 /**
@@ -56,9 +93,35 @@ void ini_table_destroy(ini_table_s *table);
  *        `file'.  Returns NULL if the file can not be read.
  * @param table
  * @param file
- * @return ini_table_s*
+ * @return success
  */
 bool ini_table_read_from_file(ini_table_s *table, const char *file);
+
+/**
+ * @brief Creates an ini_table_s struct filled with data using the
+ *        given input struct
+ * @param table
+ * @param in
+ * @return success
+ */
+bool ini_table_read(ini_table_s *table, ini_in_s *in);
+
+/**
+ * @brief Parses an ini file using the given input struct and calls the
+ *        provided callbacks.
+ * @param in
+ * @param callback
+ * @return success
+ */
+bool ini_read(ini_in_s *in, ini_callback_s *callback);
+
+/**
+ * @brief Parses an ini file and calls the provided callbacks.
+ * @param fname
+ * @param callback
+ * @return success
+ */
+bool ini_read_file(const char *fname, ini_callback_s *callback);
 
 /**
  * @brief Writes the specified ini_table_s struct to the specified `file'.
@@ -69,6 +132,15 @@ bool ini_table_read_from_file(ini_table_s *table, const char *file);
  * @return bool
  */
 bool ini_table_write_to_file(ini_table_s *table, const char *file);
+
+/**
+ * @brief Writes the specified ini_table_s struct through the given
+ *        output struct
+ * @param table
+ * @param out
+ * @return bool
+ */
+bool ini_table_write(ini_table_s *table, ini_out_s *out);
 
 /**
  * @brief Creates a new entry in the `table' containing the `key' and `value'

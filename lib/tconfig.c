@@ -27,7 +27,6 @@ SOFTWARE.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
 
 #include "tconfig.h"
 
@@ -48,9 +47,14 @@ static void _ini_error(const char *error_message, void *p)
     }
 }
 
-static ini_entry_s *_ini_entry_create(ini_section_s *section,
+static ini_entry_s *_ini_entry_create(ini_callback_s *call, ini_section_s *section,
                                       const char *key, const char *value)
 {
+    if (call && call->set)
+    {
+        call->set(call->arg, key, value);
+        return NULL;
+    }
     if ((section->size % 10) == 0)
     {
         section->entry =
@@ -61,14 +65,23 @@ static ini_entry_s *_ini_entry_create(ini_section_s *section,
         }
     }
     ini_entry_s *entry = &section->entry[section->size++];
-    strncpy(entry->key, key, INI_MAXLEN);
-    strncpy(entry->value, value, INI_MAXLEN);
+    entry->key = strdup(key);
+    entry->value = strdup(value);
+    if (entry->key == NULL || entry->value == NULL)
+    {
+        _ini_error("Failed to allocate memory for ini entry key/value", section);
+    }
     return entry;
 }
 
-static ini_section_s *_ini_section_create(ini_table_s *table,
+static ini_section_s *_ini_section_create(ini_callback_s *call, ini_table_s *table,
                                           const char *section_name)
 {
+    if (call && call->create)
+    {
+        call->create(call->arg, section_name);
+        return NULL;
+    }
     if ((table->size % 10) == 0)
     {
         table->section =
@@ -80,8 +93,17 @@ static ini_section_s *_ini_section_create(ini_table_s *table,
     }
     ini_section_s *section = &table->section[table->size++];
     section->size = 0;
-    strncpy(section->name, section_name, INI_MAXLEN);
+    section->name = strdup(section_name);
+    if (section->name == NULL)
+    {
+        _ini_error("Failed to allocate memory for ini section name", table);
+        return section;
+    }
     section->entry = calloc(1, 10 * sizeof(ini_entry_s));
+    if (section->entry == NULL)
+    {
+        _ini_error("Failed to allocate memory for ini section entries", table);
+    }
     return section;
 }
 
@@ -89,7 +111,7 @@ static ini_section_s *_ini_section_find(ini_table_s *table, const char *name)
 {
     for (int i = 0; i < table->size; i++)
     {
-        if (!strncmp(table->section[i].name, name, INI_MAXLEN))
+        if (!strcmp(table->section[i].name, name))
         {
             return &table->section[i];
         }
@@ -101,7 +123,7 @@ static ini_entry_s *_ini_entry_find(ini_section_s *section, const char *key)
 {
     for (int i = 0; i < section->size; i++)
     {
-        if (!strncmp(section->entry[i].key, key, INI_MAXLEN))
+        if (!strcmp(section->entry[i].key, key))
         {
             return &section->entry[i];
         }
@@ -144,6 +166,10 @@ ini_table_s *ini_table_create(void)
     }
     table->size = 0;
     table->section = calloc(1, 10 * sizeof(ini_section_s));
+    if (table->section == NULL)
+    {
+        _ini_error("Failed to allocate memory for ini table sections", table);
+    }
     return table;
 }
 
@@ -158,15 +184,9 @@ void ini_table_destroy(ini_table_s *table)
     free(table);
 }
 
-bool ini_table_read_from_file(ini_table_s *table, const char *file)
+bool _ini_read(ini_in_s *in, ini_callback_s *call, ini_table_s *table)
 {
-    char error[INI_MAXLEN];
-    FILE *f = fopen(file, "r");
-    if (f == NULL)
-    {
-        _ini_error("Failed to open ini file for reading", table);
-        return false;
-    }
+    char error[256];
 
     enum
     {
@@ -185,13 +205,13 @@ bool ini_table_read_from_file(ini_table_s *table, const char *file)
     if (buf == NULL)
     {
         _ini_error("Failed to allocate memory for ini parsing buffer", table);
-        fclose(f);
         return false;
     }
 
+    
     ini_section_s *current_section = NULL;
 
-    while ((c = fgetc(f)) != EOF)
+    while ((c = in->getc(in->arg)) != EOF)
     {
         if (position > buffer_size - 2)
         {
@@ -240,12 +260,14 @@ bool ini_table_read_from_file(ini_table_s *table, const char *file)
                 buf[position++] = c;
                 while (c != EOF && c != '\n')
                 {
-                    c = getc(f);
+                    c = in->getc(in->arg);
                     if (c != EOF && c != '\n')
                         buf[position++] = c;
                 }
             }
-        // fallthrough
+        case '\r':
+        // ignore this character
+            break;
         case '\n':
         // fallthrough
         case EOF:
@@ -254,28 +276,28 @@ bool ini_table_read_from_file(ini_table_s *table, const char *file)
             {
                 if (current_section == NULL)
                 {
-                    current_section = _ini_section_create(table, "");
+                    current_section = _ini_section_create(call, table, "");
                 }
-                _ini_entry_create(current_section, buf, value);
+                _ini_entry_create(call, current_section, buf, value);
                 value = NULL;
             }
             else if (state == Comment)
             {
                 if (current_section == NULL)
                 {
-                    current_section = _ini_section_create(table, "");
+                    current_section = _ini_section_create(call, table, "");
                 }
-                _ini_entry_create(current_section, buf, "");
+                _ini_entry_create(call, current_section, buf, "");
             }
             else if (state == Section)
             {
-                snprintf(error, INI_MAXLEN,
+                snprintf(error, 256,
                          "Section `%s' missing `]' operator.", buf);
                 _ini_error(error, table);
             }
             else if (state == Key && position)
             {
-                snprintf(error, INI_MAXLEN,
+                snprintf(error, 256,
                          "Key `%s' missing `=' operator.", buf);
                 _ini_error(error, table);
             }
@@ -288,7 +310,7 @@ bool ini_table_read_from_file(ini_table_s *table, const char *file)
             state = Section;
             break;
         case ']':
-            current_section = _ini_section_create(table, buf);
+            current_section = _ini_section_create(call, table, buf);
             memset(buf, '\0', buffer_size);
             position = 0;
             spaces = 0;
@@ -311,26 +333,89 @@ bool ini_table_read_from_file(ini_table_s *table, const char *file)
             break;
         }
     }
-    if (ferror(f))
+    if (in->error(in->arg))
     {
         _ini_error("Error reading ini file", table);
     }
     free(buf);
-    fclose(f);
     return true;
 }
 
-static void _ini_fwrite(ini_table_s *table, FILE *f, const char *str, ...)
+bool ini_read(ini_in_s *in, ini_callback_s *callback)
+{
+    return _ini_read(in, callback, NULL);
+}
+
+bool ini_read_file(const char *fname, ini_callback_s *callback)
+{
+    FILE *f = fopen(fname, "r");
+    if (f == NULL)
+    {
+        _ini_error("Failed to open ini file for reading", NULL);
+        return false;
+    }
+    ini_in_s fio;
+    fio.getc = (int (*)(void *))fgetc;
+    fio.error = (int (*)(void *))ferror;
+    fio.arg = f;
+    return ini_read(&fio, callback);
+}
+
+bool ini_table_read(ini_table_s *table, ini_in_s *in)
+{
+    return _ini_read(in, NULL, table);
+}
+
+bool ini_table_read_from_file(ini_table_s *table, const char *file)
+{
+    FILE *f = fopen(file, "r");
+    if (f == NULL)
+    {
+        _ini_error("Failed to open ini file for reading", table);
+        return false;
+    }
+    ini_in_s fio;
+    fio.getc = (int (*)(void *))fgetc;
+    fio.error = (int (*)(void *))ferror;
+    fio.arg = f;
+    bool result = ini_table_read(table, &fio);
+    fclose(f);
+    return result;
+}
+
+static void _ini_write(ini_table_s *table, ini_out_s *out, const char *str, ...)
 {
     va_list args;
     va_start(args, str);
-    if (vfprintf(f, str, args) < 0)
+    if (out->vprintf(out->arg, str, args) < 0)
     {
         _ini_error("Failed to write to ini file", table);
         va_end(args);
         return;
     }
     va_end(args);
+}
+
+bool ini_table_write(ini_table_s *table, ini_out_s *out)
+{
+    for (int i = 0; i < table->size; i++)
+    {
+        ini_section_s *section = &table->section[i];
+        _ini_write(table, out, i > 0 ? "\n[%s]\n" : "[%s]\n", section->name);
+        for (int q = 0; q < section->size; q++)
+        {
+            ini_entry_s *entry = &section->entry[q];
+            if (entry->key[0] == ';')
+            {
+                _ini_write(table, out, "%s\n", entry->key);
+            }
+            else
+            {
+                _ini_write(table, out, "%s = %s\n", entry->key, entry->value);
+            }
+        }
+    }
+    return true;
 }
 
 bool ini_table_write_to_file(ini_table_s *table, const char *file)
@@ -341,20 +426,23 @@ bool ini_table_write_to_file(ini_table_s *table, const char *file)
         _ini_error("Failed to open ini file for writing", table);
         return false;
     }
+    ini_out_s fio;
+    fio.vprintf = (int (*)(void *, const char *, va_list))vfprintf;
+    fio.arg = f;
     for (int i = 0; i < table->size; i++)
     {
         ini_section_s *section = &table->section[i];
-        _ini_write(table, f, i > 0 ? "\n[%s]\n" : "[%s]\n", section->name);
+        _ini_write(table, &fio, i > 0 ? "\n[%s]\n" : "[%s]\n", section->name);
         for (int q = 0; q < section->size; q++)
         {
             ini_entry_s *entry = &section->entry[q];
             if (entry->key[0] == ';')
             {
-                _ini_write(table, f, "%s\n", entry->key);
+                _ini_write(table, &fio, "%s\n", entry->key);
             }
             else
             {
-                _ini_write(table, f, "%s = %s\n", entry->key, entry->value);
+                _ini_write(table, &fio, "%s = %s\n", entry->key, entry->value);
             }
         }
     }
@@ -368,16 +456,16 @@ void ini_table_create_entry(ini_table_s *table, const char *section_name,
     ini_section_s *section = _ini_section_find(table, section_name);
     if (section == NULL)
     {
-        section = _ini_section_create(table, section_name);
+        section = _ini_section_create(NULL, table, section_name);
     }
     ini_entry_s *entry = _ini_entry_find(section, key);
     if (entry == NULL)
     {
-        entry = _ini_entry_create(section, key, value);
+        entry = _ini_entry_create(NULL, section, key, value);
     }
     else
     {
-        strncpy(entry->value, value, INI_MAXLEN);
+        entry->value = strdup(value);
     }
 }
 
@@ -430,7 +518,7 @@ bool ini_table_get_entry_as_bool(ini_table_s *table, const char *section_name,
     {
         return false;
     }
-    if (!strncmp(val, "on", INI_MAXLEN) || !strncmp(val, "true", INI_MAXLEN))
+    if (!strcmp(val, "on") || !strcmp(val, "true"))
     {
         *value = true;
     }
